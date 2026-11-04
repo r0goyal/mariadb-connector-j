@@ -20,6 +20,7 @@ import org.mariadb.jdbc.client.ServerVersion;
 import org.mariadb.jdbc.export.ExceptionFactory;
 import org.mariadb.jdbc.export.Prepare;
 import org.mariadb.jdbc.message.server.InitialHandshakePacket;
+import org.mariadb.jdbc.util.PreparedStatementFrequencyTracker;
 import org.mariadb.jdbc.util.constants.Capabilities;
 
 /** Context (current connection state) of a connection */
@@ -219,11 +220,36 @@ public class BaseContext implements Context {
 
   public Prepare putPrepareCacheCmd(
       String sql, Prepare result, BasePreparedStatement preparedStatement) {
+    boolean frequency =
+        switch (conf.serverPrepStmtStrategy()) {
+          case FREQUENCY -> true;
+          case ALL -> false;
+        };
+    if (frequency) {
+      String nativeSql = preparedStatement == null ? sql : preparedStatement.getLastSql();
+      return prepareCache.put(
+          database + "|" + sql,
+          result,
+          preparedStatement,
+          new PreparedStatementFrequencyTracker.Key(database, nativeSql));
+    }
     return prepareCache.put(database + "|" + sql, result, preparedStatement);
   }
 
   public void resetPrepareCache() {
     if (prepareCache != null) prepareCache.reset();
+  }
+
+  /**
+   * Record a submitted execution unit, then indicate whether its SQL is selected for server
+   * preparation. In "all" strategy, always returns true.
+   *
+   * @param sql exact native SQL, without timeout or row-limit wrappers
+   * @param weight submitted execution units (batch size, or 1)
+   * @return true if the SQL is selected for server preparation
+   */
+  public boolean recordExecutionAndSelectedForPrepare(String sql, long weight) {
+    return prepareCache == null || prepareCache.recordExecutionAndSelected(database, sql, weight);
   }
 
   public int getStateFlag() {

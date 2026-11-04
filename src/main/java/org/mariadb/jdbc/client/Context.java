@@ -234,6 +234,15 @@ public interface Context {
   void resetPrepareCache();
 
   /**
+   * Records submitted execution units under the connection lock and returns selection membership.
+   *
+   * @param sql exact native SQL without timeout or row-limit wrappers
+   * @param weight submitted execution units
+   * @return true for selected SQL, or when frequency selection is disabled
+   */
+  boolean recordExecutionAndSelectedForPrepare(String sql, long weight);
+
+  /**
    * return connection current state change flag
    *
    * @return connection current state change flag

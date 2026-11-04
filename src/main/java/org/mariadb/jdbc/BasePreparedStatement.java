@@ -114,6 +114,24 @@ public abstract class BasePreparedStatement extends Statement implements Prepare
     this.sql = sql;
   }
 
+  /** Returns the text-protocol prefix for server-side timeout and row limits. */
+  protected String preSqlCmd() {
+    if (queryTimeout != 0 && con.useServerTimeout()) {
+      if (con.useServerMaxRows() && maxRows > 0) {
+        return "SET STATEMENT max_statement_time="
+            + queryTimeout
+            + ", SQL_SELECT_LIMIT="
+            + maxRows
+            + " FOR ";
+      }
+      return "SET STATEMENT max_statement_time=" + queryTimeout + " FOR ";
+    }
+    if (con.useServerMaxRows() && maxRows > 0) {
+      return "SET STATEMENT SQL_SELECT_LIMIT=" + maxRows + " FOR ";
+    }
+    return null;
+  }
+
   @Override
   public String toString() {
     StringBuilder sb = new StringBuilder("sql:'" + sql + "'");
