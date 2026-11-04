@@ -23,6 +23,7 @@ import org.mariadb.jdbc.message.client.PreparePacket;
 import org.mariadb.jdbc.message.server.OkPacket;
 import org.mariadb.jdbc.message.server.PrepareResultPacket;
 import org.mariadb.jdbc.util.ParameterList;
+import org.mariadb.jdbc.util.PreparedStatementFrequencyTracker;
 import org.mariadb.jdbc.util.timeout.QueryTimeoutHandler;
 
 /**
@@ -32,6 +33,13 @@ import org.mariadb.jdbc.util.timeout.QueryTimeoutHandler;
 public class ServerPreparedStatement extends BasePreparedStatement {
 
   private final boolean frequencyMode;
+
+  /**
+   * Statement-scoped temporary prepare for metadata on a not-selected statement in frequency mode.
+   * Built on first metadata call, reused afterwards, released by {@link #close()}. Never enters the
+   * connection prepare cache. Null in all other cases.
+   */
+  private Prepare metadataPrepare;
 
   /**
    * Server prepare statement constructor
@@ -112,8 +120,7 @@ public class ServerPreparedStatement extends BasePreparedStatement {
       if (prepareResult == null && con.cachePrepStmts())
         prepareResult = con.getContext().getPrepareCacheCmd(cmd, this);
       if (frequencyMode && prepareResult == null) validTextParameters();
-      boolean selected =
-          !frequencyMode || con.getContext().recordExecutionAndSelectedForPrepare(sql, 1);
+      boolean selected = !frequencyMode || recordFrequencyExecution(1);
       if (prepareResult == null && !selected) {
         PreparedTextExecution.execute(this, clientParser);
       } else if (prepareResult == null && con.getContext().permitPipeline()) {
@@ -141,7 +148,7 @@ public class ServerPreparedStatement extends BasePreparedStatement {
     try (ClosableLock ignore = lock.closeableLock();
         QueryTimeoutHandler timeout = con.handleTimeout(queryTimeout)) {
       validTextParameters();
-      if (recordExecution) con.getContext().recordExecutionAndSelectedForPrepare(sql, 1);
+      if (recordExecution) recordFrequencyExecution(1);
       PreparedTextExecution.execute(this, clientParser);
     } catch (SQLException e) {
       results = null;
@@ -278,9 +285,25 @@ public class ServerPreparedStatement extends BasePreparedStatement {
     }
   }
 
+  /**
+   * Records a submitted execution unit with this statement's memoized identity, then indicates
+   * whether its SQL is selected for server preparation. Builds the identity once and rebuilds it if
+   * the connection database changed since the last execution.
+   *
+   * @param weight submitted execution units
+   * @return true if the SQL is selected for server preparation
+   */
+  private boolean recordFrequencyExecution(long weight) {
+    String database = con.getContext().getDatabase();
+    if (frequencyKey == null || !java.util.Objects.equals(frequencyKey.database(), database)) {
+      frequencyKey = new PreparedStatementFrequencyTracker.Key(database, getLastSql());
+    }
+    return con.getContext()
+        .recordExecutionAndSelectedForPrepare(frequencyKey, getLastSql(), weight);
+  }
+
   private boolean selectBatchForServer() throws SQLException {
-    boolean selected =
-        con.getContext().recordExecutionAndSelectedForPrepare(sql, batchParameters.size());
+    boolean selected = recordFrequencyExecution(batchParameters.size());
     if (prepareResult == null) {
       prepareResult = con.getContext().getPrepareCacheCmd(escapeTimeout(sql), this);
     }
@@ -718,14 +741,14 @@ public class ServerPreparedStatement extends BasePreparedStatement {
     try (ClosableLock ignore = lock.closeableLock()) {
       checkNotClosed();
       if (prepareResult != null) return metadata.apply(prepareResult);
-      con.getClient().execute(new PreparePacket(escapeTimeout(sql), false), this, true);
-      Prepare temporary = prepareResult;
-      prepareResult = null;
-      try {
-        return metadata.apply(temporary);
-      } finally {
-        temporary.decrementUse(con.getClient(), this);
+      if (metadataPrepare == null) {
+        // Statement-scoped temporary prepare: built once, reused for later metadata calls, and
+        // released by close(). Never enters the connection prepare cache.
+        con.getClient().execute(new PreparePacket(escapeTimeout(sql), false), this, true);
+        metadataPrepare = prepareResult;
+        prepareResult = null;
       }
+      return metadata.apply(metadataPrepare);
     }
   }
 
@@ -736,11 +759,17 @@ public class ServerPreparedStatement extends BasePreparedStatement {
   @Override
   @SuppressWarnings("try")
   public void close() throws SQLException {
-    if (prepareResult != null) {
+    if (prepareResult != null || metadataPrepare != null) {
       try (ClosableLock ignore = lock.closeableLock()) {
-        prepareResult.decrementUse(con.getClient(), this);
+        if (prepareResult != null) {
+          prepareResult.decrementUse(con.getClient(), this);
+          prepareResult = null;
+        }
+        if (metadataPrepare != null) {
+          metadataPrepare.decrementUse(con.getClient(), this);
+          metadataPrepare = null;
+        }
       }
-      prepareResult = null;
     }
     con.fireStatementClosed(this);
     super.close();

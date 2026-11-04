@@ -118,13 +118,19 @@ public class FrequencyPreparedStatementTest extends Common {
       long prepared = status(con, "Com_stmt_prepare");
       long closed = status(con, "Com_stmt_close");
       assertEquals(1, statement.getMetaData().getColumnCount());
+      // The temporary prepare is statement-scoped: repeated metadata calls reuse it.
+      assertEquals(1, statement.getMetaData().getColumnCount());
       assertEquals(1, statement.getParameterMetaData().getParameterCount());
-      assertEquals(prepared + 2, status(con, "Com_stmt_prepare"));
-      assertEquals(closed + 2, status(con, "Com_stmt_close"));
+      assertEquals(1, statement.getMetaData().getColumnCount());
+      assertEquals(prepared + 1, status(con, "Com_stmt_prepare"));
+      assertEquals(closed, status(con, "Com_stmt_close"));
       execute(statement, 1);
-      assertEquals(prepared + 2, status(con, "Com_stmt_prepare"));
+      assertEquals(prepared + 1, status(con, "Com_stmt_prepare"));
       execute(statement, 2);
-      assertEquals(prepared + 3, status(con, "Com_stmt_prepare"));
+      assertEquals(prepared + 2, status(con, "Com_stmt_prepare"));
+      // The statement close releases the temporary metadata handle.
+      statement.close();
+      assertEquals(closed + 1, status(con, "Com_stmt_close"));
     }
   }
 

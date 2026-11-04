@@ -73,6 +73,7 @@ import org.mariadb.jdbc.plugin.codec.TimeCodec;
 import org.mariadb.jdbc.plugin.codec.TimestampCodec;
 import org.mariadb.jdbc.util.CodecLookup;
 import org.mariadb.jdbc.util.ParameterList;
+import org.mariadb.jdbc.util.PreparedStatementFrequencyTracker;
 import org.mariadb.jdbc.util.constants.ColumnFlags;
 import org.mariadb.jdbc.util.timeout.QueryTimeoutHandler;
 
@@ -90,6 +91,13 @@ public abstract class BasePreparedStatement extends Statement implements Prepare
 
   /** PREPARE command result */
   protected Prepare prepareResult = null;
+
+  /**
+   * Memoized frequency-tracking identity of this statement's SQL. Null unless frequency strategy is
+   * enabled and the SQL has been recorded at least once; reused for every execution so the warm
+   * path allocates nothing.
+   */
+  protected PreparedStatementFrequencyTracker.Key frequencyKey = null;
 
   /**
    * Constructor

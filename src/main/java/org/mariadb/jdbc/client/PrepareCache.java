@@ -56,6 +56,16 @@ public interface PrepareCache {
    */
   boolean recordExecutionAndSelected(String database, String sql, long weight);
 
+  /**
+   * Records a submitted execution unit with a caller-provided identity, then indicates whether its
+   * SQL is selected for server preparation. A no-op that returns true in "all" strategy.
+   *
+   * @param key identity of the statement's native SQL
+   * @param weight submitted execution units (batch size, or 1)
+   * @return true if the SQL is selected for server preparation
+   */
+  boolean recordExecutionAndSelected(PreparedStatementFrequencyTracker.Key key, long weight);
+
   /** Reset cache */
   void reset();
 }

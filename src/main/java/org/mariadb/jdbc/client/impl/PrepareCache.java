@@ -79,6 +79,10 @@ public final class PrepareCache extends LinkedHashMap<String, CachedPrepareResul
   /**
    * Returns the cache key of the eviction victim: the least-recently-used entry not selected for
    * server preparation, or null when all entries are selected (caller then evicts the eldest).
+   *
+   * <p>This is a linear scan over cache entries. It runs only when the cache is over capacity, once
+   * per cache miss, and the cache size is bounded by {@code prepStmtCacheSize}; the scan cost is
+   * part of the opt-in frequency-strategy trade-off.
    */
   private String selectEvictionVictim() {
     if (selection == null) {
@@ -139,6 +143,24 @@ public final class PrepareCache extends LinkedHashMap<String, CachedPrepareResul
     }
     PreparedStatementFrequencyTracker.Key key =
         new PreparedStatementFrequencyTracker.Key(database, sql);
+    selection.recordExecution(key, weight);
+    return selection.isSelected(key);
+  }
+
+  /**
+   * Records a submitted execution unit with a caller-provided identity in frequency mode, then
+   * indicates whether its SQL is selected for server preparation. No-op returning true in "all"
+   * mode.
+   *
+   * @param key identity of the statement's native SQL
+   * @param weight submitted execution units
+   * @return true if the SQL is selected for server preparation
+   */
+  public boolean recordExecutionAndSelected(
+      PreparedStatementFrequencyTracker.Key key, long weight) {
+    if (selection == null) {
+      return true;
+    }
     selection.recordExecution(key, weight);
     return selection.isSelected(key);
   }
