@@ -26,6 +26,7 @@ import org.mariadb.jdbc.message.server.PrepareResultPacket;
 /** Send a client COM_STMT_PREPARE packet see https://mariadb.com/kb/en/com_stmt_prepare/ */
 public final class PreparePacket implements ClientMessage {
   private final String sql;
+  private final boolean cacheResult;
 
   /**
    * Construct prepare packet
@@ -33,7 +34,18 @@ public final class PreparePacket implements ClientMessage {
    * @param sql sql command
    */
   public PreparePacket(String sql) {
+    this(sql, true);
+  }
+
+  /**
+   * Constructs a prepare packet with explicit cache eligibility.
+   *
+   * @param sql SQL command
+   * @param cacheResult whether the result can enter the prepare cache
+   */
+  public PreparePacket(String sql, boolean cacheResult) {
     this.sql = sql;
+    this.cacheResult = cacheResult;
   }
 
   @Override
@@ -80,7 +92,8 @@ public final class PreparePacket implements ClientMessage {
               errorPacket.getErrorCode(),
               true);
     }
-    if (context.getConf().useServerPrepStmts()
+    if (cacheResult
+        && context.getConf().useServerPrepStmts()
         && context.getConf().cachePrepStmts()
         && sql.length() < 8192) {
       PrepareResultPacket prepare = new CachedPrepareResultPacket(buf, reader, context);

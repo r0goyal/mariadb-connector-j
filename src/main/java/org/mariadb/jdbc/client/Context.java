@@ -10,6 +10,7 @@ import org.mariadb.jdbc.BasePreparedStatement;
 import org.mariadb.jdbc.Configuration;
 import org.mariadb.jdbc.export.ExceptionFactory;
 import org.mariadb.jdbc.export.Prepare;
+import org.mariadb.jdbc.util.PreparedStatementFrequencyTracker;
 
 public interface Context {
 
@@ -232,6 +233,28 @@ public interface Context {
 
   /** Reset prepare cache (after a failover) */
   void resetPrepareCache();
+
+  /**
+   * Records submitted execution units under the connection lock and returns selection membership.
+   *
+   * @param sql exact native SQL without timeout or row-limit wrappers
+   * @param weight submitted execution units
+   * @return true for selected SQL, or when frequency selection is disabled
+   */
+  boolean recordExecutionAndSelectedForPrepare(String sql, long weight);
+
+  /**
+   * Records submitted execution units under the connection lock and returns selection membership.
+   * Reuses the caller's memoized identity, allocating nothing on the warm path.
+   *
+   * @param key memoized identity of the statement's native SQL
+   * @param sql exact native SQL without timeout or row-limit wrappers, used once to build the
+   *     identity when the memo is null
+   * @param weight submitted execution units
+   * @return true for selected SQL, or when frequency selection is disabled
+   */
+  boolean recordExecutionAndSelectedForPrepare(
+      PreparedStatementFrequencyTracker.Key key, String sql, long weight);
 
   /**
    * return connection current state change flag

@@ -22,6 +22,7 @@ import java.util.Properties;
 import java.util.ServiceLoader;
 import java.util.Set;
 import org.mariadb.jdbc.export.HaMode;
+import org.mariadb.jdbc.export.ServerPrepStmtStrategy;
 import org.mariadb.jdbc.export.SslMode;
 import org.mariadb.jdbc.plugin.Codec;
 import org.mariadb.jdbc.plugin.CredentialPlugin;
@@ -186,6 +187,8 @@ public class Configuration {
   private boolean cachePrepStmts;
   private int prepStmtCacheSize;
   private boolean useServerPrepStmts;
+  private ServerPrepStmtStrategy serverPrepStmtStrategy;
+  private int serverPrepStmtWindowSize;
 
   // authentication
   private CredentialPlugin credentialType;
@@ -370,6 +373,12 @@ public class Configuration {
     this.dumpQueriesOnException =
         builder.dumpQueriesOnException != null && builder.dumpQueriesOnException;
     this.prepStmtCacheSize = builder.prepStmtCacheSize != null ? builder.prepStmtCacheSize : 250;
+    this.serverPrepStmtStrategy =
+        builder.serverPrepStmtStrategy == null
+            ? ServerPrepStmtStrategy.ALL
+            : ServerPrepStmtStrategy.from(builder.serverPrepStmtStrategy);
+    this.serverPrepStmtWindowSize =
+        builder.serverPrepStmtWindowSize == null ? 0 : builder.serverPrepStmtWindowSize;
     this.useAffectedRows = builder.useAffectedRows != null && builder.useAffectedRows;
     this.rewriteBatchedStatements =
         builder.rewriteBatchedStatements != null && builder.rewriteBatchedStatements;
@@ -554,6 +563,37 @@ public class Configuration {
 
     // Validate integer fields
     validateIntegerFields();
+    validatePreparedStatementStrategy();
+  }
+
+  private void validatePreparedStatementStrategy() {
+    boolean valid =
+        switch (serverPrepStmtStrategy) {
+          case ALL -> true;
+          case FREQUENCY ->
+              useServerPrepStmts
+                  && cachePrepStmts
+                  && prepStmtCacheSize > 0
+                  && serverPrepStmtWindowSize > 0
+                  && serverPrepStmtWindowSize >= 2L * prepStmtCacheSize;
+        };
+    if (valid) {
+      return;
+    }
+    if (serverPrepStmtStrategy == ServerPrepStmtStrategy.ALL) {
+      throw new IllegalArgumentException("all strategy cannot fail validation");
+    }
+    if (!useServerPrepStmts || !cachePrepStmts || prepStmtCacheSize <= 0) {
+      throw new IllegalArgumentException(
+          "frequency strategy requires useServerPrepStmts=true, cachePrepStmts=true, and a"
+              + " positive prepStmtCacheSize");
+    }
+    if (serverPrepStmtWindowSize <= 0) {
+      throw new IllegalArgumentException(
+          "frequency strategy requires an explicit positive serverPrepStmtWindowSize");
+    }
+    throw new IllegalArgumentException(
+        "serverPrepStmtWindowSize must be at least twice prepStmtCacheSize");
   }
 
   private void validateIntegerFields() {
@@ -658,6 +698,8 @@ public class Configuration {
             .cachePrepStmts(this.cachePrepStmts)
             .prepStmtCacheSize(this.prepStmtCacheSize)
             .useServerPrepStmts(this.useServerPrepStmts)
+            .serverPrepStmtStrategy(this.serverPrepStmtStrategy.toString())
+            .serverPrepStmtWindowSize(this.serverPrepStmtWindowSize)
             .credentialType(this.credentialType == null ? null : this.credentialType.type())
             .sessionVariables(this.sessionVariables)
             .connectionAttributes(this.connectionAttributes)
@@ -1164,6 +1206,7 @@ public class Configuration {
       case "MetaExportedKeys":
       case "Integer":
       case "SslMode":
+      case "ServerPrepStmtStrategy":
       case "CatalogTerm":
         appendSimpleField(field, fieldValue, defaultValue, defaultOpts, diffOpts);
         break;
@@ -1971,6 +2014,16 @@ public class Configuration {
     return useServerPrepStmts;
   }
 
+  /** Returns the server-preparation strategy. The default is all. */
+  public ServerPrepStmtStrategy serverPrepStmtStrategy() {
+    return serverPrepStmtStrategy;
+  }
+
+  /** Returns the execution-unit window size, or zero when unspecified in all mode. */
+  public int serverPrepStmtWindowSize() {
+    return serverPrepStmtWindowSize;
+  }
+
   /**
    * Connections attributes
    *
@@ -2547,6 +2600,8 @@ public class Configuration {
     private Boolean cachePrepStmts;
     private Integer prepStmtCacheSize;
     private Boolean useServerPrepStmts;
+    private String serverPrepStmtStrategy;
+    private Integer serverPrepStmtWindowSize;
 
     // authentication
     private String credentialType;
@@ -3340,6 +3395,28 @@ public class Configuration {
      */
     public Builder useServerPrepStmts(Boolean useServerPrepStmts) {
       this.useServerPrepStmts = useServerPrepStmts;
+      return this;
+    }
+
+    /**
+     * Selects all (legacy behavior) or frequency-based server preparation.
+     *
+     * @param serverPrepStmtStrategy strategy name
+     * @return this builder
+     */
+    public Builder serverPrepStmtStrategy(String serverPrepStmtStrategy) {
+      this.serverPrepStmtStrategy = serverPrepStmtStrategy;
+      return this;
+    }
+
+    /**
+     * Sets the execution-history limit. Frequency mode requires an explicit positive value.
+     *
+     * @param serverPrepStmtWindowSize retained execution units per physical connection
+     * @return this builder
+     */
+    public Builder serverPrepStmtWindowSize(Integer serverPrepStmtWindowSize) {
+      this.serverPrepStmtWindowSize = serverPrepStmtWindowSize;
       return this;
     }
 

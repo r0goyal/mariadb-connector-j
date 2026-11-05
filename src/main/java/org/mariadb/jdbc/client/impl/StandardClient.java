@@ -83,6 +83,7 @@ import org.mariadb.jdbc.plugin.TlsSocketPlugin;
 import org.mariadb.jdbc.plugin.authentication.AuthenticationPluginLoader;
 import org.mariadb.jdbc.plugin.tls.TlsSocketPluginLoader;
 import org.mariadb.jdbc.util.IPUtility;
+import org.mariadb.jdbc.util.PreparedStatementFrequencyTracker;
 import org.mariadb.jdbc.util.Security;
 import org.mariadb.jdbc.util.StringUtils;
 import org.mariadb.jdbc.util.constants.Capabilities;
@@ -382,8 +383,19 @@ public class StandardClient implements Client, AutoCloseable {
   }
 
   private void initializeContext(InitialHandshakePacket handshake, long clientCapabilities) {
+    boolean frequency =
+        conf.cachePrepStmts()
+            && switch (conf.serverPrepStmtStrategy()) {
+              case FREQUENCY -> true;
+              case ALL -> false;
+            };
+    PreparedStatementFrequencyTracker selection =
+        frequency
+            ? new PreparedStatementFrequencyTracker(
+                conf.prepStmtCacheSize(), conf.serverPrepStmtWindowSize())
+            : null;
     PrepareCache cache =
-        conf.cachePrepStmts() ? new PrepareCache(conf.prepStmtCacheSize(), this) : null;
+        conf.cachePrepStmts() ? new PrepareCache(conf.prepStmtCacheSize(), this, selection) : null;
 
     Boolean isLoopback = null;
     if (socket.getInetAddress() != null) isLoopback = socket.getInetAddress().isLoopbackAddress();

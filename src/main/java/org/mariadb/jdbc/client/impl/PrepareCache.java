@@ -3,6 +3,7 @@
 // Copyright (c) 2015-2026 MariaDB plc
 package org.mariadb.jdbc.client.impl;
 
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.mariadb.jdbc.BasePreparedStatement;
@@ -10,8 +11,9 @@ import org.mariadb.jdbc.client.util.ClosableLock;
 import org.mariadb.jdbc.export.Prepare;
 import org.mariadb.jdbc.message.server.CachedPrepareResultPacket;
 import org.mariadb.jdbc.message.server.PrepareResultPacket;
+import org.mariadb.jdbc.util.PreparedStatementFrequencyTracker;
 
-/** LRU prepare cache */
+/** LRU prepare cache, evicting non-selected entries before selected ones in frequency mode */
 public final class PrepareCache extends LinkedHashMap<String, CachedPrepareResultPacket>
     implements org.mariadb.jdbc.client.PrepareCache {
 
@@ -26,37 +28,84 @@ public final class PrepareCache extends LinkedHashMap<String, CachedPrepareResul
   private final transient StandardClient con;
 
   /**
+   * SQL identities selected for server preparation in frequency mode. Entries absent from this set
+   * are evicted first. Null in "all" strategy: eviction is then plain LRU.
+   */
+  private final transient PreparedStatementFrequencyTracker selection;
+
+  /** frequency-mode identity of each cached entry, for eviction priority */
+  private final transient Map<String, PreparedStatementFrequencyTracker.Key> identities;
+
+  /**
    * LRU prepare cache constructor
    *
    * @param size cache size
    * @param con client
    */
   public PrepareCache(int size, StandardClient con) {
+    this(size, con, null);
+  }
+
+  /**
+   * LRU prepare cache constructor with frequency selection
+   *
+   * @param size cache size
+   * @param con client
+   * @param selection connection-local selection state, or null for plain LRU
+   */
+  public PrepareCache(int size, StandardClient con, PreparedStatementFrequencyTracker selection) {
     super(size, .75f, true);
     this.maxSize = size;
     this.con = con;
+    this.selection = selection;
+    this.identities = selection == null ? null : new HashMap<>();
   }
 
   @Override
   public boolean removeEldestEntry(Map.Entry<String, CachedPrepareResultPacket> eldest) {
     if (this.size() > maxSize) {
-      eldest.getValue().unCache(con);
-      return true;
+      String victim = selectEvictionVictim();
+      if (victim == null) {
+        eldest.getValue().unCache(con);
+        if (identities != null) identities.remove(eldest.getKey());
+        return true;
+      }
+      remove(victim).unCache(con);
+      identities.remove(victim);
     }
     return false;
   }
 
-  public Prepare get(String key, BasePreparedStatement preparedStatement) {
-    try (ClosableLock ignore = lock.closeableLock()) {
-      CachedPrepareResultPacket prepare = super.get(key);
-      if (prepare != null && preparedStatement != null) {
-        prepare.incrementUse(preparedStatement);
-      }
-      return prepare;
+  /**
+   * Returns the cache key of the eviction victim: the least-recently-used entry not selected for
+   * server preparation, or null when all entries are selected (caller then evicts the eldest).
+   *
+   * <p>This is a linear scan over cache entries. It runs only when the cache is over capacity, once
+   * per cache miss, and the cache size is bounded by {@code prepStmtCacheSize}; the scan cost is
+   * part of the opt-in frequency-strategy trade-off.
+   */
+  private String selectEvictionVictim() {
+    if (selection == null) {
+      return null;
     }
+    for (Map.Entry<String, CachedPrepareResultPacket> entry : entrySet()) {
+      PreparedStatementFrequencyTracker.Key identity = identities.get(entry.getKey());
+      if (identity == null || !selection.isSelected(identity)) {
+        return entry.getKey();
+      }
+    }
+    return null;
   }
 
   public Prepare put(String key, Prepare result, BasePreparedStatement preparedStatement) {
+    return put(key, result, preparedStatement, null);
+  }
+
+  public Prepare put(
+      String key,
+      Prepare result,
+      BasePreparedStatement preparedStatement,
+      PreparedStatementFrequencyTracker.Key identity) {
     // a ReentrantLock, not a monitor: evicting an entry sends COM_STMT_CLOSE to the server, and a
     // virtual thread parking in a socket write must not pin its carrier
     try (ClosableLock ignore = lock.closeableLock()) {
@@ -71,9 +120,58 @@ public final class PrepareCache extends LinkedHashMap<String, CachedPrepareResul
 
       if (((CachedPrepareResultPacket) result).cache()) {
         ((CachedPrepareResultPacket) result).incrementUse(preparedStatement);
+        // Register before insertion: the eviction callback must see the new entry's identity.
+        if (selection != null) identities.put(key, identity);
         super.put(key, (CachedPrepareResultPacket) result);
       }
       return null;
+    }
+  }
+
+  /**
+   * Record a submitted execution unit in frequency mode, then indicate whether its SQL is selected
+   * for server preparation. No-op returning true in "all" mode.
+   *
+   * @param database current database, can be null
+   * @param sql exact native SQL
+   * @param weight submitted execution units
+   * @return true if the SQL is selected for server preparation
+   */
+  public boolean recordExecutionAndSelected(String database, String sql, long weight) {
+    if (selection == null) {
+      return true;
+    }
+    PreparedStatementFrequencyTracker.Key key =
+        new PreparedStatementFrequencyTracker.Key(database, sql);
+    selection.recordExecution(key, weight);
+    return selection.isSelected(key);
+  }
+
+  /**
+   * Records a submitted execution unit with a caller-provided identity in frequency mode, then
+   * indicates whether its SQL is selected for server preparation. No-op returning true in "all"
+   * mode.
+   *
+   * @param key identity of the statement's native SQL
+   * @param weight submitted execution units
+   * @return true if the SQL is selected for server preparation
+   */
+  public boolean recordExecutionAndSelected(
+      PreparedStatementFrequencyTracker.Key key, long weight) {
+    if (selection == null) {
+      return true;
+    }
+    selection.recordExecution(key, weight);
+    return selection.isSelected(key);
+  }
+
+  public Prepare get(String key, BasePreparedStatement preparedStatement) {
+    try (ClosableLock ignore = lock.closeableLock()) {
+      CachedPrepareResultPacket prepare = super.get(key);
+      if (prepare != null && preparedStatement != null) {
+        prepare.incrementUse(preparedStatement);
+      }
+      return prepare;
     }
   }
 
@@ -98,5 +196,9 @@ public final class PrepareCache extends LinkedHashMap<String, CachedPrepareResul
       prep.reset();
     }
     this.clear();
+    if (identities != null) {
+      identities.clear();
+    }
+    if (selection != null) selection.reset();
   }
 }

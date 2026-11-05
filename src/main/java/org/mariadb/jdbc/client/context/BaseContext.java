@@ -20,6 +20,7 @@ import org.mariadb.jdbc.client.ServerVersion;
 import org.mariadb.jdbc.export.ExceptionFactory;
 import org.mariadb.jdbc.export.Prepare;
 import org.mariadb.jdbc.message.server.InitialHandshakePacket;
+import org.mariadb.jdbc.util.PreparedStatementFrequencyTracker;
 import org.mariadb.jdbc.util.constants.Capabilities;
 
 /** Context (current connection state) of a connection */
@@ -219,11 +220,52 @@ public class BaseContext implements Context {
 
   public Prepare putPrepareCacheCmd(
       String sql, Prepare result, BasePreparedStatement preparedStatement) {
-    return prepareCache.put(database + "|" + sql, result, preparedStatement);
+    PreparedStatementFrequencyTracker.Key identity =
+        preparedStatement == null
+            ? null
+            : switch (conf.serverPrepStmtStrategy()) {
+              case FREQUENCY ->
+                  new PreparedStatementFrequencyTracker.Key(
+                      database, preparedStatement.getLastSql());
+              case ALL -> null;
+            };
+    return prepareCache.put(database + "|" + sql, result, preparedStatement, identity);
   }
 
   public void resetPrepareCache() {
     if (prepareCache != null) prepareCache.reset();
+  }
+
+  /**
+   * Record a submitted execution unit, then indicate whether its SQL is selected for server
+   * preparation. In "all" strategy, always returns true.
+   *
+   * @param sql exact native SQL, without timeout or row-limit wrappers
+   * @param weight submitted execution units (batch size, or 1)
+   * @return true if the SQL is selected for server preparation
+   */
+  public boolean recordExecutionAndSelectedForPrepare(String sql, long weight) {
+    return prepareCache == null || prepareCache.recordExecutionAndSelected(database, sql, weight);
+  }
+
+  /**
+   * Records a submitted execution unit with the caller's memoized identity, allocating nothing on
+   * the warm path. Builds the identity once on first use.
+   *
+   * @param key memoized identity of the statement's native SQL, replaced when null
+   * @param sql exact native SQL, without timeout or row-limit wrappers
+   * @param weight submitted execution units (batch size, or 1)
+   * @return true if the SQL is selected for server preparation
+   */
+  public boolean recordExecutionAndSelectedForPrepare(
+      PreparedStatementFrequencyTracker.Key key, String sql, long weight) {
+    if (prepareCache == null) {
+      return true;
+    }
+    if (key == null) {
+      key = new PreparedStatementFrequencyTracker.Key(database, sql);
+    }
+    return prepareCache.recordExecutionAndSelected(key, weight);
   }
 
   public int getStateFlag() {

@@ -6,6 +6,7 @@ package org.mariadb.jdbc.integration;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.io.ByteArrayInputStream;
+import java.io.StringReader;
 import java.math.BigDecimal;
 import java.sql.*;
 import java.time.LocalDate;
@@ -17,6 +18,35 @@ import org.mariadb.jdbc.MariaDbBlob;
 import org.mariadb.jdbc.Statement;
 
 public class PreparedStatementTest extends Common {
+
+  @Test
+  public void textExecutionKeepsOwnerAcrossParameterChanges() throws SQLException {
+    try (Connection con = createCon("&useServerPrepStmts=false");
+        PreparedStatement statement = con.prepareStatement("SELECT ? AS v")) {
+      statement.setQueryTimeout(2);
+      statement.setMaxRows(1);
+      statement.setInt(1, 42);
+      try (ResultSet rows = statement.executeQuery()) {
+        assertSame(statement, rows.getStatement());
+        assertTrue(rows.next());
+        assertEquals(42, rows.getInt(1));
+        assertFalse(rows.next());
+      }
+      statement.setCharacterStream(1, new StringReader("next"), 4);
+      try (ResultSet rows = statement.executeQuery()) {
+        assertSame(statement, rows.getStatement());
+        assertTrue(rows.next());
+        assertEquals("next", rows.getString(1));
+        assertFalse(rows.next());
+      }
+      statement.setNull(1, Types.VARCHAR);
+      try (ResultSet rows = statement.executeQuery()) {
+        assertSame(statement, rows.getStatement());
+        assertTrue(rows.next());
+        assertNull(rows.getObject(1));
+      }
+    }
+  }
 
   @AfterAll
   public static void drop() throws SQLException {

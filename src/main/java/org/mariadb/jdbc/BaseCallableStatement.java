@@ -65,7 +65,8 @@ public abstract class BaseCallableStatement extends ServerPreparedStatement
         Statement.RETURN_GENERATED_KEYS,
         resultSetType,
         resultSetConcurrency,
-        Math.max(0, defaultFetchSize));
+        Math.max(0, defaultFetchSize),
+        false);
     this.databaseName = databaseName;
     this.procedureName = procedureName;
   }
@@ -91,7 +92,6 @@ public abstract class BaseCallableStatement extends ServerPreparedStatement
     }
     super.setFetchSize(rows);
   }
-
 
   /**
    * Output result without output parameters

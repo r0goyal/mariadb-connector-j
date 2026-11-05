@@ -25,12 +25,92 @@ import org.mariadb.jdbc.HostAddress;
 import org.mariadb.jdbc.NonRegisteringDriver;
 import org.mariadb.jdbc.TransactionIsolation;
 import org.mariadb.jdbc.export.HaMode;
+import org.mariadb.jdbc.export.ServerPrepStmtStrategy;
 import org.mariadb.jdbc.export.SslMode;
 import org.mariadb.jdbc.integration.Common;
 import org.mariadb.jdbc.util.constants.CatalogTerm;
 
 @SuppressWarnings("ConstantConditions")
 public class ConfigurationTest {
+
+  @Test
+  public void frequencyStrategyRequiresExplicitValidWindow() {
+    String url =
+        "jdbc:mariadb://localhost/test?useServerPrepStmts=true&cachePrepStmts=true"
+            + "&prepStmtCacheSize=2&serverPrepStmtStrategy=frequency";
+    for (String value :
+        new String[] {
+          "",
+          "&serverPrepStmtWindowSize=0",
+          "&serverPrepStmtWindowSize=-1",
+          "&serverPrepStmtWindowSize=1"
+        }) {
+      assertThrows(SQLException.class, () -> Configuration.parse(url + value), value);
+    }
+  }
+
+  @Test
+  public void frequencyWindowMustHoldEveryCacheEntryTwice() throws SQLException {
+    String url =
+        "jdbc:mariadb://localhost/test?useServerPrepStmts=true&cachePrepStmts=true"
+            + "&prepStmtCacheSize=2&serverPrepStmtStrategy=frequency";
+    assertThrows(
+        SQLException.class, () -> Configuration.parse(url + "&serverPrepStmtWindowSize=3"));
+    assertEquals(
+        4, Configuration.parse(url + "&serverPrepStmtWindowSize=4").serverPrepStmtWindowSize());
+  }
+
+  @Test
+  public void frequencyWindowParsesFromPropertiesAndSurvivesRoundTrip() throws SQLException {
+    Properties properties = new Properties();
+    properties.setProperty("useServerPrepStmts", "true");
+    properties.setProperty("prepStmtCacheSize", "2");
+    properties.setProperty("serverPrepStmtStrategy", "FREQUENCY");
+    properties.setProperty("serverPrepStmtWindowSize", "16");
+    Configuration configuration = Configuration.parse("jdbc:mariadb://localhost/test", properties);
+    assertEquals(ServerPrepStmtStrategy.FREQUENCY, configuration.serverPrepStmtStrategy());
+    assertEquals(16, configuration.serverPrepStmtWindowSize());
+    Configuration rebuilt = configuration.toBuilder().build();
+    assertEquals(configuration.serverPrepStmtStrategy(), rebuilt.serverPrepStmtStrategy());
+    assertEquals(16, rebuilt.serverPrepStmtWindowSize());
+    Configuration parsed = Configuration.parse(configuration.toString());
+    assertEquals(ServerPrepStmtStrategy.FREQUENCY, parsed.serverPrepStmtStrategy());
+    assertEquals(16, parsed.serverPrepStmtWindowSize());
+    assertTrue(
+        Configuration.toConf(configuration.toString())
+            .contains("serverPrepStmtStrategy : frequency"));
+  }
+
+  @Test
+  public void legacyStrategyDoesNotRequireOrInferAWindow() throws SQLException {
+    Configuration defaults = Configuration.parse("jdbc:mariadb://localhost/test");
+    assertEquals(ServerPrepStmtStrategy.ALL, defaults.serverPrepStmtStrategy());
+    assertEquals(0, defaults.serverPrepStmtWindowSize());
+    Configuration explicit =
+        Configuration.parse("jdbc:mariadb://localhost/test?serverPrepStmtStrategy=ALL");
+    assertEquals(ServerPrepStmtStrategy.ALL, explicit.serverPrepStmtStrategy());
+    assertEquals(0, explicit.serverPrepStmtWindowSize());
+    assertFalse(explicit.useServerPrepStmts());
+  }
+
+  @Test
+  public void frequencyStrategyRejectsIncompatibleSettings() {
+    String url =
+        "jdbc:mariadb://localhost/test?serverPrepStmtStrategy=frequency"
+            + "&serverPrepStmtWindowSize=16&prepStmtCacheSize=2&useServerPrepStmts=true";
+    for (String value :
+        new String[] {
+          "&useServerPrepStmts=false",
+          "&cachePrepStmts=false",
+          "&prepStmtCacheSize=0",
+          "&rewriteBatchedStatements=true"
+        }) {
+      assertThrows(SQLException.class, () -> Configuration.parse(url + value), value);
+    }
+    assertThrows(
+        SQLException.class,
+        () -> Configuration.parse("jdbc:mariadb://localhost/test?serverPrepStmtStrategy=unknown"));
+  }
 
   @Test
   public void testWrongFormat() {
